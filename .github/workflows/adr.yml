@@ -1,4 +1,4 @@
-name: Native Git Mirror (Exact History & Blank Branch Creation)
+name: Native Git Mirror (Massive Repo Chunked Push)
 
 on:
   workflow_dispatch:
@@ -15,46 +15,79 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Task 1: Android LLVM (Uses --mirror because we fetch the default repo state)
+          # Task 1: Android LLVM Toolchain -> branch: aosp
           - name: "Android LLVM"
-            clone_cmd: "git clone --mirror https://android.googlesource.com/toolchain/llvm-project llvm-project.git"
+            clone_cmd: "git clone --bare https://android.googlesource.com/toolchain/llvm-project llvm-project.git"
             dir: "llvm-project.git"
             target_branch: "aosp"
             
-          # Task 2: LLVM Org (Uses --bare to prevent refspec crashes with --single-branch)
+          # Task 2: LLVM Org specific branch -> branch: ollvm
           - name: "LLVM 22.1.6"
             clone_cmd: "git clone --bare --single-branch --branch llvmorg-22.1.6 https://github.com/llvm/llvm-project.git llvm-project-22.1.6.git"
             dir: "llvm-project-22.1.6.git"
             target_branch: "ollvm"
 
     steps:
-      - name: ⚙️ Configure Git for Massive Repositories
-        # This prevents GitHub's servers from crashing (HTTP 500 / Disconnect) 
-        # when uploading gigabytes of history in a single push.
+      - name: ⚙️ Configure Git for Stability
+        # Keeps the local Git client from choking on gigabytes of data
         run: |
-          git config --global http.postBuffer 1073741824   # 1 GB buffer
-          git config --global http.version HTTP/1.1        # HTTP/1.1 prevents sideband disconnects
-          git config --global core.compression 0           # Avoid CPU-heavy re-compression timeouts
-          git config --global pack.windowMemory 256m       # Prevent runner out-of-memory errors
-          git config --global pack.packSizeLimit 2g        # Chunk large packs
+          git config --global http.postBuffer 1073741824
+          git config --global http.version HTTP/1.1
+          git config --global core.compression 0
 
       - name: 🌐 Fetch Upstream (Bare Clone)
         run: |
           echo "Executing: ${{ matrix.clone_cmd }}"
           ${{ matrix.clone_cmd }}
 
-      - name: 🚀 Create Blank Branch & Push Exact History
+      - name: 🚀 Chunked Push (Bypasses GitHub 500 Timeout)
         run: |
           cd ${{ matrix.dir }}
           
-          # Securely construct the target URL using the Action's built-in token
+          # Securely construct the target URL
           TARGET_REPO="https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
           
-          # Step 1: Ensure a clean slate
+          # 1. DELETE BRANCH: Fulfills your requirement for a "full blank" slate
           echo "Ensuring a clean slate for branch '${{ matrix.target_branch }}'..."
           git push "$TARGET_REPO" --delete refs/heads/${{ matrix.target_branch }} || echo "Branch does not exist yet. Ready to create full blank."
           
-          # Step 2: Push the exact upstream tree to our new branch.
-          # The Git config tweaks above will now keep this connection stable.
-          echo "Pushing exact git history to construct the branch..."
-          git push "$TARGET_REPO" HEAD:refs/heads/${{ matrix.target_branch }}
+          # 2. GATHER HISTORY
+          echo "Gathering chronological commit history..."
+          # Creates an array of all commits from oldest to newest
+          COMMITS=($(git rev-list --reverse HEAD))
+          TOTAL=${#COMMITS[@]}
+          
+          # Define chunk size. 20,000 commits is small enough to bypass GitHub's 500 errors, 
+          # but large enough that it finishes quickly.
+          CHUNK_SIZE=20000 
+          
+          echo "Total commits to push: $TOTAL"
+          
+          # 3. INCREMENTAL PUSH
+          for (( i=CHUNK_SIZE-1; i < TOTAL; i+=CHUNK_SIZE )); do
+            COMMIT="${COMMITS[$i]}"
+            echo "--------------------------------------------------------"
+            echo "Pushing chunk ending at commit $COMMIT (Commit $((i+1))/$TOTAL)..."
+            
+            # Built-in retry logic just in case there's a momentary network blip
+            for retry in 1 2 3 4; do
+              # We use --force to guarantee it builds cleanly from the blank branch
+              if git push "$TARGET_REPO" "$COMMIT:refs/heads/${{ matrix.target_branch }}" --force; then
+                echo "✅ Chunk successful!"
+                break
+              else
+                if [ $retry -eq 4 ]; then
+                  echo "❌ Failed after 4 retries."
+                  exit 1
+                fi
+                echo "⚠️ Push failed (likely a small timeout). Retrying in 10 seconds ($retry/4)..."
+                sleep 10
+              fi
+            done
+          done
+          
+          # 4. FINAL PUSH
+          echo "--------------------------------------------------------"
+          echo "Pushing final remaining commits to HEAD..."
+          git push "$TARGET_REPO" HEAD:refs/heads/${{ matrix.target_branch }} --force
+          echo "🎉 Mirror complete!"
