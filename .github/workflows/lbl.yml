@@ -1,0 +1,63 @@
+name: Exact Label Synchronization
+
+on:
+  workflow_dispatch: # Run manually from the Actions tab
+  # schedule:
+  #   - cron: '0 4 * * 0' # Optional: Run automatically every Sunday
+
+# Enforce least-privilege permissions
+permissions:
+  issues: write # Explicitly required to create, update, and delete repository labels
+
+jobs:
+  sync-labels:
+    name: Sync Labels from llvm/llvm-project
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 📥 Clone and Update Upstream Labels
+        env:
+          # Uses the default secure token; no PAT required for labels!
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Cloning and updating labels from llvm/llvm-project..."
+          # The --force flag guarantees that if LLVM changed a label's color 
+          # or description, we overwrite ours to perfectly match it.
+          gh label clone llvm/llvm-project --repo ${{ github.repository }} --force
+
+      - name: 🧹 Prune Extraneous Labels (Exact Sync)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Fetching label lists to identify extraneous labels..."
+          
+          # 1. Fetch all label names from LLVM. 
+          # --paginate ensures we don't miss any if there are hundreds.
+          # jq -r extracts raw text (no quotes), and we sort them alphabetically.
+          gh api repos/llvm/llvm-project/labels --paginate | jq -r '.[].name' | sort > upstream_labels.txt
+          
+          # 2. Fetch all label names from your current mirrored repository.
+          gh api repos/${{ github.repository }}/labels --paginate | jq -r '.[].name' | sort > our_labels.txt
+          
+          # 3. Mathematical Set Difference: 
+          # Use 'comm' to find labels present in our repo but missing in upstream.
+          comm -13 upstream_labels.txt our_labels.txt > labels_to_delete.txt
+          
+          COUNT=$(wc -l < labels_to_delete.txt)
+          echo "Found $COUNT extraneous label(s) to delete."
+          
+          if [ "$COUNT" -eq "0" ]; then
+            echo "✅ Labels are perfectly in sync. Nothing to delete."
+            exit 0
+          fi
+          
+          # 4. Iterate through the extraneous list and cleanly delete them.
+          while IFS= read -r label; do
+            # Skip empty lines
+            [ -z "$label" ] && continue
+            
+            echo "🗑️ Deleting orphaned label: $label"
+            gh label delete "$label" --repo ${{ github.repository }} --yes
+          done < labels_to_delete.txt
+          
+          echo "🎉 Exact label synchronization complete!"
