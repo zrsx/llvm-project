@@ -1,0 +1,61 @@
+name: Native Git Mirror (Exact History & Blank Branch Creation)
+
+on:
+  workflow_dispatch: # Allows manual triggering from the Actions tab
+  # schedule:
+  #   - cron: '0 3 * * *' # Optional: Sync daily at 3 AM
+
+# Enforce strict least-privilege security
+permissions:
+  contents: write
+
+jobs:
+  mirror-history:
+    name: Mirror to [${{ matrix.target_branch }}]
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false # Ensure 'ollvm' processes even if 'aosp' has network issues
+      matrix:
+        include:
+          # Task 1: Android LLVM Toolchain -> mapped to branch: aosp
+          - name: "Android LLVM"
+            clone_cmd: "git clone --mirror https://android.googlesource.com/toolchain/llvm-project llvm-project.git"
+            dir: "llvm-project.git"
+            target_branch: "aosp"
+            
+          # Task 2: LLVM Org specific branch -> mapped to branch: ollvm
+          - name: "LLVM 22.1.6"
+            clone_cmd: "git clone --mirror --single-branch --branch llvmorg-22.1.6 https://github.com/llvm/llvm-project.git llvm-project-22.1.6.git"
+            dir: "llvm-project-22.1.6.git"
+            target_branch: "ollvm"
+
+    steps:
+      - name: 🌐 Fetch Upstream (Bare Clone)
+        # Downloads ONLY the internal Git database. Extremely fast.
+        run: |
+          echo "Executing: ${{ matrix.clone_cmd }}"
+          ${{ matrix.clone_cmd }}
+
+      - name: 🚀 Create Blank Branch & Push Exact History
+        run: |
+          cd ${{ matrix.dir }}
+          
+          # Securely construct the target URL using the Action's built-in token
+          TARGET_REPO="https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+          
+          # -------------------------------------------------------------------
+          # MATURITY FEATURE: FULL BLANK CREATION & EXACT HISTORY
+          # -------------------------------------------------------------------
+          
+          # Step 1 (Optional but highly mature): Delete the branch on the remote 
+          # if it already exists. This guarantees we start from a "full blank" 
+          # slate and removes any lingering hidden refs.
+          echo "Ensuring a clean slate for branch '${{ matrix.target_branch }}'..."
+          git push "$TARGET_REPO" --delete refs/heads/${{ matrix.target_branch }} || echo "Branch does not exist yet. Ready to create full blank."
+          
+          # Step 2: Push the HEAD (the exact upstream tree) to our new branch.
+          # Because this is pushed directly to the ref, it is created as an 
+          # independent branch. It will share NO history with your 'main' branch.
+          echo "Pushing exact git history to construct the branch..."
+          git push "$TARGET_REPO" HEAD:refs/heads/${{ matrix.target_branch }}
