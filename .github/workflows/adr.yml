@@ -1,11 +1,8 @@
 name: Native Git Mirror (Exact History & Blank Branch Creation)
 
 on:
-  workflow_dispatch: # Allows manual triggering from the Actions tab
-  # schedule:
-  #   - cron: '0 3 * * *' # Optional: Sync daily at 3 AM
+  workflow_dispatch:
 
-# Enforce strict least-privilege security
 permissions:
   contents: write
 
@@ -15,24 +12,33 @@ jobs:
     runs-on: ubuntu-latest
 
     strategy:
-      fail-fast: false # Ensure 'ollvm' processes even if 'aosp' has network issues
+      fail-fast: false
       matrix:
         include:
-          # Task 1: Android LLVM Toolchain -> mapped to branch: aosp
+          # Task 1: Android LLVM (Uses --mirror because we fetch the default repo state)
           - name: "Android LLVM"
             clone_cmd: "git clone --mirror https://android.googlesource.com/toolchain/llvm-project llvm-project.git"
             dir: "llvm-project.git"
             target_branch: "aosp"
             
-          # Task 2: LLVM Org specific branch -> mapped to branch: ollvm
+          # Task 2: LLVM Org (Uses --bare to prevent refspec crashes with --single-branch)
           - name: "LLVM 22.1.6"
-            clone_cmd: "git clone --mirror --single-branch --branch llvmorg-22.1.6 https://github.com/llvm/llvm-project.git llvm-project-22.1.6.git"
+            clone_cmd: "git clone --bare --single-branch --branch llvmorg-22.1.6 https://github.com/llvm/llvm-project.git llvm-project-22.1.6.git"
             dir: "llvm-project-22.1.6.git"
             target_branch: "ollvm"
 
     steps:
+      - name: ⚙️ Configure Git for Massive Repositories
+        # This prevents GitHub's servers from crashing (HTTP 500 / Disconnect) 
+        # when uploading gigabytes of history in a single push.
+        run: |
+          git config --global http.postBuffer 1073741824   # 1 GB buffer
+          git config --global http.version HTTP/1.1        # HTTP/1.1 prevents sideband disconnects
+          git config --global core.compression 0           # Avoid CPU-heavy re-compression timeouts
+          git config --global pack.windowMemory 256m       # Prevent runner out-of-memory errors
+          git config --global pack.packSizeLimit 2g        # Chunk large packs
+
       - name: 🌐 Fetch Upstream (Bare Clone)
-        # Downloads ONLY the internal Git database. Extremely fast.
         run: |
           echo "Executing: ${{ matrix.clone_cmd }}"
           ${{ matrix.clone_cmd }}
@@ -44,18 +50,11 @@ jobs:
           # Securely construct the target URL using the Action's built-in token
           TARGET_REPO="https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
           
-          # -------------------------------------------------------------------
-          # MATURITY FEATURE: FULL BLANK CREATION & EXACT HISTORY
-          # -------------------------------------------------------------------
-          
-          # Step 1 (Optional but highly mature): Delete the branch on the remote 
-          # if it already exists. This guarantees we start from a "full blank" 
-          # slate and removes any lingering hidden refs.
+          # Step 1: Ensure a clean slate
           echo "Ensuring a clean slate for branch '${{ matrix.target_branch }}'..."
           git push "$TARGET_REPO" --delete refs/heads/${{ matrix.target_branch }} || echo "Branch does not exist yet. Ready to create full blank."
           
-          # Step 2: Push the HEAD (the exact upstream tree) to our new branch.
-          # Because this is pushed directly to the ref, it is created as an 
-          # independent branch. It will share NO history with your 'main' branch.
+          # Step 2: Push the exact upstream tree to our new branch.
+          # The Git config tweaks above will now keep this connection stable.
           echo "Pushing exact git history to construct the branch..."
           git push "$TARGET_REPO" HEAD:refs/heads/${{ matrix.target_branch }}
