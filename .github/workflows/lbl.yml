@@ -1,13 +1,12 @@
 name: Exact Label Synchronization
 
 on:
-  workflow_dispatch: # Run manually from the Actions tab
+  workflow_dispatch: # Run manually
   # schedule:
   #   - cron: '0 4 * * 0' # Optional: Run automatically every Sunday
 
-# Enforce least-privilege permissions
 permissions:
-  issues: write # Explicitly required to create, update, and delete repository labels
+  issues: write # Explicitly required to modify repository labels
 
 jobs:
   sync-labels:
@@ -15,49 +14,97 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-      - name: 📥 Clone and Update Upstream Labels
-        env:
-          # Uses the default secure token; no PAT required for labels!
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "Cloning and updating labels from llvm/llvm-project..."
-          # The --force flag guarantees that if LLVM changed a label's color 
-          # or description, we overwrite ours to perfectly match it.
-          gh label clone llvm/llvm-project --repo ${{ github.repository }} --force
+      - name: 🔄 Smart Sync Labels (Bypasses CLI Deadlock)
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const upstreamOwner = 'llvm';
+            const upstreamRepo = 'llvm-project';
+            const targetOwner = context.repo.owner;
+            const targetRepo = context.repo.repo;
 
-      - name: 🧹 Prune Extraneous Labels (Exact Sync)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "Fetching label lists to identify extraneous labels..."
-          
-          # 1. Fetch all label names from LLVM. 
-          # --paginate ensures we don't miss any if there are hundreds.
-          # jq -r extracts raw text (no quotes), and we sort them alphabetically.
-          gh api repos/llvm/llvm-project/labels --paginate | jq -r '.[].name' | sort > upstream_labels.txt
-          
-          # 2. Fetch all label names from your current mirrored repository.
-          gh api repos/${{ github.repository }}/labels --paginate | jq -r '.[].name' | sort > our_labels.txt
-          
-          # 3. Mathematical Set Difference: 
-          # Use 'comm' to find labels present in our repo but missing in upstream.
-          comm -13 upstream_labels.txt our_labels.txt > labels_to_delete.txt
-          
-          COUNT=$(wc -l < labels_to_delete.txt)
-          echo "Found $COUNT extraneous label(s) to delete."
-          
-          if [ "$COUNT" -eq "0" ]; then
-            echo "✅ Labels are perfectly in sync. Nothing to delete."
-            exit 0
-          fi
-          
-          # 4. Iterate through the extraneous list and cleanly delete them.
-          while IFS= read -r label; do
-            # Skip empty lines
-            [ -z "$label" ] && continue
+            console.log("📥 Fetching labels from llvm/llvm-project...");
+            const upstreamLabels = await github.paginate(github.rest.issues.listLabelsForRepo, {
+              owner: upstreamOwner,
+              repo: upstreamRepo,
+              per_page: 100
+            });
+            console.log(`Found ${upstreamLabels.length} labels in upstream.`);
+
+            console.log("📥 Fetching labels from our repository...");
+            const targetLabels = await github.paginate(github.rest.issues.listLabelsForRepo, {
+              owner: targetOwner,
+              repo: targetRepo,
+              per_page: 100
+            });
+            console.log(`Found ${targetLabels.length} labels in our repo.`);
+
+            // Create maps for instant lookup
+            const targetLabelMap = new Map();
+            for (const label of targetLabels) {
+              targetLabelMap.set(label.name, label);
+            }
+
+            const upstreamLabelMap = new Map();
+            for (const label of upstreamLabels) {
+              upstreamLabelMap.set(label.name, label);
+            }
+
+            // -----------------------------------------------------------------
+            // STEP 1: CREATE OR UPDATE LABELS
+            // -----------------------------------------------------------------
+            console.log("\n🚀 Starting Create/Update phase...");
+            let created = 0, updated = 0;
             
-            echo "🗑️ Deleting orphaned label: $label"
-            gh label delete "$label" --repo ${{ github.repository }} --yes
-          done < labels_to_delete.txt
-          
-          echo "🎉 Exact label synchronization complete!"
+            for (const uLabel of upstreamLabels) {
+              const tLabel = targetLabelMap.get(uLabel.name);
+              const uDesc = uLabel.description || '';
+              
+              if (!tLabel) {
+                console.log(`[CREATE]  ${uLabel.name}`);
+                await github.rest.issues.createLabel({
+                  owner: targetOwner,
+                  repo: targetRepo,
+                  name: uLabel.name,
+                  color: uLabel.color,
+                  description: uDesc
+                });
+                created++;
+              } else {
+                const tDesc = tLabel.description || '';
+                // Only update if the color or description actually changed
+                if (tLabel.color !== uLabel.color || tDesc !== uDesc) {
+                  console.log(`[UPDATE]  ${uLabel.name} (Color or Description changed)`);
+                  await github.rest.issues.updateLabel({
+                    owner: targetOwner,
+                    repo: targetRepo,
+                    name: uLabel.name,
+                    color: uLabel.color,
+                    description: uDesc
+                  });
+                  updated++;
+                }
+              }
+            }
+
+            // -----------------------------------------------------------------
+            // STEP 2: PRUNE EXTRANEOUS LABELS
+            // -----------------------------------------------------------------
+            console.log("\n🧹 Starting Pruning phase...");
+            let deleted = 0;
+
+            for (const tLabel of targetLabels) {
+              // If a label exists in our repo but NOT in upstream, delete it.
+              if (!upstreamLabelMap.has(tLabel.name)) {
+                console.log(`[DELETE]  ${tLabel.name}`);
+                await github.rest.issues.deleteLabel({
+                  owner: targetOwner,
+                  repo: targetRepo,
+                  name: tLabel.name
+                });
+                deleted++;
+              }
+            }
+
+            console.log("\n🎉 Exact label synchronization complete!");
+            console.log(`Summary: ${created} created | ${updated} updated | ${deleted} deleted.`);
