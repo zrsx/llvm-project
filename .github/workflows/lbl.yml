@@ -1,12 +1,10 @@
 name: Exact Label Synchronization
 
 on:
-  workflow_dispatch: # Run manually
-  # schedule:
-  #   - cron: '0 4 * * 0' # Optional: Run automatically every Sunday
+  workflow_dispatch:
 
 permissions:
-  issues: write # Explicitly required to modify repository labels
+  issues: write
 
 jobs:
   sync-labels:
@@ -14,97 +12,58 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-      - name: 🔄 Smart Sync Labels (Bypasses CLI Deadlock)
+      - name: 🔄 Smart Sync Labels (Throttled)
         uses: actions/github-script@v7
         with:
           script: |
+            const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+            
             const upstreamOwner = 'llvm';
             const upstreamRepo = 'llvm-project';
             const targetOwner = context.repo.owner;
             const targetRepo = context.repo.repo;
 
-            console.log("📥 Fetching labels from llvm/llvm-project...");
+            console.log("📥 Fetching labels...");
             const upstreamLabels = await github.paginate(github.rest.issues.listLabelsForRepo, {
-              owner: upstreamOwner,
-              repo: upstreamRepo,
-              per_page: 100
+              owner: upstreamOwner, repo: upstreamRepo, per_page: 100
             });
-            console.log(`Found ${upstreamLabels.length} labels in upstream.`);
-
-            console.log("📥 Fetching labels from our repository...");
             const targetLabels = await github.paginate(github.rest.issues.listLabelsForRepo, {
-              owner: targetOwner,
-              repo: targetRepo,
-              per_page: 100
+              owner: targetOwner, repo: targetRepo, per_page: 100
             });
-            console.log(`Found ${targetLabels.length} labels in our repo.`);
 
-            // Create maps for instant lookup
-            const targetLabelMap = new Map();
-            for (const label of targetLabels) {
-              targetLabelMap.set(label.name, label);
-            }
+            const targetLabelMap = new Map(targetLabels.map(l => [l.name, l]));
+            const upstreamLabelMap = new Map(upstreamLabels.map(l => [l.name, l]));
 
-            const upstreamLabelMap = new Map();
-            for (const label of upstreamLabels) {
-              upstreamLabelMap.set(label.name, label);
-            }
-
-            // -----------------------------------------------------------------
-            // STEP 1: CREATE OR UPDATE LABELS
-            // -----------------------------------------------------------------
-            console.log("\n🚀 Starting Create/Update phase...");
-            let created = 0, updated = 0;
-            
+            // STEP 1: CREATE OR UPDATE
             for (const uLabel of upstreamLabels) {
               const tLabel = targetLabelMap.get(uLabel.name);
               const uDesc = uLabel.description || '';
               
               if (!tLabel) {
-                console.log(`[CREATE]  ${uLabel.name}`);
+                console.log(`[CREATE] ${uLabel.name}`);
                 await github.rest.issues.createLabel({
-                  owner: targetOwner,
-                  repo: targetRepo,
-                  name: uLabel.name,
-                  color: uLabel.color,
-                  description: uDesc
+                  owner: targetOwner, repo: targetRepo,
+                  name: uLabel.name, color: uLabel.color, description: uDesc
                 });
-                created++;
-              } else {
-                const tDesc = tLabel.description || '';
-                // Only update if the color or description actually changed
-                if (tLabel.color !== uLabel.color || tDesc !== uDesc) {
-                  console.log(`[UPDATE]  ${uLabel.name} (Color or Description changed)`);
-                  await github.rest.issues.updateLabel({
-                    owner: targetOwner,
-                    repo: targetRepo,
-                    name: uLabel.name,
-                    color: uLabel.color,
-                    description: uDesc
-                  });
-                  updated++;
-                }
+                await sleep(1500); // 1.5s delay to avoid secondary rate limits
+              } else if (tLabel.color !== uLabel.color || (tLabel.description || '') !== uDesc) {
+                console.log(`[UPDATE] ${uLabel.name}`);
+                await github.rest.issues.updateLabel({
+                  owner: targetOwner, repo: targetRepo,
+                  name: uLabel.name, color: uLabel.color, description: uDesc
+                });
+                await sleep(1500);
               }
             }
 
-            // -----------------------------------------------------------------
-            // STEP 2: PRUNE EXTRANEOUS LABELS
-            // -----------------------------------------------------------------
-            console.log("\n🧹 Starting Pruning phase...");
-            let deleted = 0;
-
+            // STEP 2: PRUNE
             for (const tLabel of targetLabels) {
-              // If a label exists in our repo but NOT in upstream, delete it.
               if (!upstreamLabelMap.has(tLabel.name)) {
-                console.log(`[DELETE]  ${tLabel.name}`);
+                console.log(`[DELETE] ${tLabel.name}`);
                 await github.rest.issues.deleteLabel({
-                  owner: targetOwner,
-                  repo: targetRepo,
-                  name: tLabel.name
+                  owner: targetOwner, repo: targetRepo, name: tLabel.name
                 });
-                deleted++;
+                await sleep(1500);
               }
             }
-
-            console.log("\n🎉 Exact label synchronization complete!");
-            console.log(`Summary: ${created} created | ${updated} updated | ${deleted} deleted.`);
+            console.log("🎉 Sync complete!");
