@@ -3,7 +3,8 @@ name: Native Git Mirror (Massive Repo Chunked Push)
 on:
   workflow_dispatch:
 
-permissions:
+# We no longer rely on built-in permissions because we are using a PAT
+permissions: 
   contents: write
 
 jobs:
@@ -15,13 +16,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Task 1: Android LLVM Toolchain -> branch: aosp
           - name: "Android LLVM"
             clone_cmd: "git clone --bare https://android.googlesource.com/toolchain/llvm-project llvm-project.git"
             dir: "llvm-project.git"
             target_branch: "aosp"
             
-          # Task 2: LLVM Org specific branch -> branch: ollvm
           - name: "LLVM 22.1.6"
             clone_cmd: "git clone --bare --single-branch --branch llvmorg-22.1.6 https://github.com/llvm/llvm-project.git llvm-project-22.1.6.git"
             dir: "llvm-project-22.1.6.git"
@@ -29,7 +28,6 @@ jobs:
 
     steps:
       - name: ⚙️ Configure Git for Stability
-        # Keeps the local Git client from choking on gigabytes of data
         run: |
           git config --global http.postBuffer 1073741824
           git config --global http.version HTTP/1.1
@@ -44,21 +42,19 @@ jobs:
         run: |
           cd ${{ matrix.dir }}
           
-          # Securely construct the target URL
-          TARGET_REPO="https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+          # ---------------------------------------------------------
+          # THE FIX: Using the PAT with Workflow permissions
+          # ---------------------------------------------------------
+          TARGET_REPO="https://${{ secrets.PAT_WORKFLOW }}@github.com/${{ github.repository }}.git"
           
-          # 1. DELETE BRANCH: Fulfills your requirement for a "full blank" slate
+          # 1. DELETE BRANCH
           echo "Ensuring a clean slate for branch '${{ matrix.target_branch }}'..."
           git push "$TARGET_REPO" --delete refs/heads/${{ matrix.target_branch }} || echo "Branch does not exist yet. Ready to create full blank."
           
           # 2. GATHER HISTORY
           echo "Gathering chronological commit history..."
-          # Creates an array of all commits from oldest to newest
           COMMITS=($(git rev-list --reverse HEAD))
           TOTAL=${#COMMITS[@]}
-          
-          # Define chunk size. 20,000 commits is small enough to bypass GitHub's 500 errors, 
-          # but large enough that it finishes quickly.
           CHUNK_SIZE=20000 
           
           echo "Total commits to push: $TOTAL"
@@ -69,9 +65,7 @@ jobs:
             echo "--------------------------------------------------------"
             echo "Pushing chunk ending at commit $COMMIT (Commit $((i+1))/$TOTAL)..."
             
-            # Built-in retry logic just in case there's a momentary network blip
             for retry in 1 2 3 4; do
-              # We use --force to guarantee it builds cleanly from the blank branch
               if git push "$TARGET_REPO" "$COMMIT:refs/heads/${{ matrix.target_branch }}" --force; then
                 echo "✅ Chunk successful!"
                 break
@@ -80,7 +74,7 @@ jobs:
                   echo "❌ Failed after 4 retries."
                   exit 1
                 fi
-                echo "⚠️ Push failed (likely a small timeout). Retrying in 10 seconds ($retry/4)..."
+                echo "⚠️ Push failed. Retrying in 10 seconds ($retry/4)..."
                 sleep 10
               fi
             done
