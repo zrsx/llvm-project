@@ -10,7 +10,7 @@ permissions:
 jobs:
   mirror-history:
     name: Mirror to [${{ matrix.target_branch }}]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
 
     strategy:
       fail-fast: false
@@ -21,9 +21,9 @@ jobs:
             dir: "llvm-project.git"
             target_branch: "aosp"
             
-          - name: "LLVM 22.1.6"
-            clone_cmd: "git clone --bare --single-branch --branch llvmorg-22.1.6 https://github.com/llvm/llvm-project.git llvm-project-22.1.6.git"
-            dir: "llvm-project-22.1.6.git"
+          - name: "LLVM 22.1.7"
+            clone_cmd: "git clone --bare --single-branch --branch llvmorg-22.1.7 https://github.com/llvm/llvm-project.git llvm-project-22.1.7.git"
+            dir: "llvm-project-22.1.7.git"
             target_branch: "ollvm"
 
     steps:
