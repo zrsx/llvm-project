@@ -1,0 +1,750 @@
+# ============================================================
+# Build LLVM 22.1.7 for Android  (Clang / compiler-rt / libc++ / lld)
+#
+# Repository layout assumed (AOSP + official LLVM merged in main):
+#
+#   $GITHUB_WORKSPACE/
+#   ├── llvm/                       ← llvm-project subdir (CMake entry point)
+#   ├── clang/
+#   ├── clang-tools-extra/
+#   ├── compiler-rt/
+#   ├── lld/
+#   ├── lldb/
+#   ├── bolt/
+#   ├── libcxx/
+#   ├── libcxxabi/
+#   ├── libunwind/
+#   ├── openmp/
+#   ├── toolchain/
+#   │   └── llvm_android/           ← AOSP build scripts (merged from android.googlesource.com)
+#   └── scripts/
+#       └── build_android_runtime.sh
+#
+# Pipeline – three stages:
+#   validate  ── fast: derive cache key, no checkout required
+#   build     ── checkout merged repo → stage-1 bootstrap → stage-2 full toolchain
+#                → cross-compile Android runtimes (arm / arm64 / x86 / x86_64)
+#                → package tarball + SBOM
+#   smoke-test ── install toolchain, compile hello-world for host + arm64-android
+#   release   ── (optional) publish GitHub Release
+#
+# Secrets required:
+#   GHCR_TOKEN  – PAT with packages:write (for Docker layer cache, if used)
+#
+# Self-hosted runner label: llvm-builder  (ubuntu-22.04, ≥ 32 GB RAM, ≥ 100 GB SSD)
+# ============================================================
+
+name: Build LLVM 22.1.7 for Android
+
+on:
+  push:
+    branches: ["main", "release/**"]
+    tags:     ["llvmorg-*"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+    inputs:
+      skip_tests:
+        description: "Skip LLVM unit tests (faster iteration)"
+        required: false
+        default: "false"
+        type: choice
+        options: ["true", "false"]
+      enable_lto:
+        description: "Enable ThinLTO on stage-2 host toolchain"
+        required: false
+        default: "false"
+        type: choice
+        options: ["true", "false"]
+      upload_release:
+        description: "Publish artifacts to a GitHub Release"
+        required: false
+        default: "false"
+        type: choice
+        options: ["true", "false"]
+
+# Cancel any in-flight run for the same ref so pushes don't queue.
+concurrency:
+  group: llvm-android-${{ github.ref }}
+  cancel-in-progress: true
+
+# ─────────────────────────────── Global env ───────────────────────────────
+env:
+  # Pinned versions — update here to propagate everywhere.
+  LLVM_TAG:           "llvmorg-22.1.7"
+  LLVM_VERSION:       "22"           # major version, used for resource-dir paths
+  ANDROID_API_MIN:    "21"
+  ANDROID_API_MAX:    "35"
+  NDK_VERSION:        "r27c"
+  NDK_HOME:           "/opt/android-ndk"
+  PYTHON_VERSION:     "3.11"
+  CMAKE_VERSION:      "3.28.3"
+  NINJA_VERSION:      "1.11.1"
+
+  # Build / install directories (all under the runner workspace)
+  BUILD_DIR:          "${{ github.workspace }}/out"
+  PACKAGE_DIR:        "${{ github.workspace }}/packages"
+
+  # ccache
+  CCACHE_DIR:         "${{ github.workspace }}/.ccache"
+  CCACHE_MAXSIZE:     "20G"
+  CCACHE_COMPRESS:    "1"
+
+  DEBIAN_FRONTEND:    "noninteractive"
+  TZ:                 "Etc/UTC"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# JOB 1 – Validate & derive cache key (github-hosted, cheap, no checkout)
+#
+# The repo SHA from the push/PR event is all we need to build a
+# deterministic cache key.  No clone required — fast-fail happens in
+# the build job's structure-check step.
+# ═══════════════════════════════════════════════════════════════════════════
+jobs:
+  validate:
+    name: "⬡ Derive cache key"
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    outputs:
+      cache_key: ${{ steps.key.outputs.cache_key }}
+      repo_sha:  ${{ steps.key.outputs.repo_sha }}
+
+    steps:
+      - name: Derive deterministic cache key
+        id: key
+        run: |
+          set -euo pipefail
+          REPO_SHA="${{ github.sha }}"
+          SHORT_SHA="${REPO_SHA:0:12}"
+          KEY="llvm-android-${SHORT_SHA}-ndk${NDK_VERSION}-cmake${CMAKE_VERSION}"
+          echo "cache_key=${KEY}" >> "$GITHUB_OUTPUT"
+          echo "repo_sha=${REPO_SHA}"  >> "$GITHUB_OUTPUT"
+          echo "::notice::Cache key : ${KEY}"
+          echo "::notice::Repo SHA  : ${REPO_SHA}"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# JOB 2 – Build LLVM + Android runtimes
+#
+# Runs on a self-hosted runner labelled `llvm-builder` (ubuntu-22.04,
+# ≥ 32 GB RAM, ≥ 100 GB SSD).  Swap the `runs-on` value for `ubuntu-22.04`
+# to use a github-hosted runner (much slower, may run out of disk).
+# ═══════════════════════════════════════════════════════════════════════════
+  build:
+    name: "🔨 Build LLVM ${{ env.LLVM_TAG }} for Android"
+    needs: validate
+    runs-on: [self-hosted, llvm-builder, linux, X64]
+    timeout-minutes: 360
+    permissions:
+      contents: read
+
+    outputs:
+      package_name: ${{ steps.package.outputs.package_name }}
+      tarball:      ${{ steps.package.outputs.tarball }}
+      tarball_sha:  ${{ steps.package.outputs.tarball_sha }}
+
+    steps:
+      # ── 0. Checkout merged repo ──────────────────────────────────────────
+      #   Both llvm-project sources and AOSP toolchain/llvm_android scripts
+      #   live in this single repo.  A shallow clone is sufficient.
+      - name: Checkout merged AOSP + LLVM repo
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 1
+          submodules:  recursive
+          ref: main
+
+      # ── 1. Sanity-check expected source layout ───────────────────────────
+      - name: Verify repo layout
+        run: |
+          set -euo pipefail
+          MISSING=()
+          for DIR in llvm clang compiler-rt lld libcxx libcxxabi libunwind \
+                     toolchain/llvm_android scripts; do
+            [[ -d "$GITHUB_WORKSPACE/$DIR" ]] || MISSING+=("$DIR")
+          done
+          if (( ${#MISSING[@]} > 0 )); then
+            echo "::error::Expected directories not found: ${MISSING[*]}"
+            echo "::error::Check that this workflow matches the repo layout."
+            exit 1
+          fi
+          echo "Repo layout OK."
+
+      # ── 2. System packages ───────────────────────────────────────────────
+      - name: Install system dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential git curl wget unzip zip xz-utils \
+            python3 python3-pip python3-venv \
+            cmake ninja-build ccache \
+            pkg-config libssl-dev \
+            gcc-multilib g++-multilib \
+            libc6-dev-i386-cross lib32z1 \
+            binutils-dev \
+            libncurses5-dev zlib1g-dev \
+            libxml2-dev libedit-dev libffi-dev \
+            rsync patch ssh lsb-release \
+            software-properties-common gnupg2 \
+            libtinfo-dev libzstd-dev \
+            swig doxygen graphviz \
+            mingw-w64 tzdata \
+            patchelf file jq
+          python3 -m pip install --upgrade pip setuptools wheel
+
+      # ── 3. ccache restore ────────────────────────────────────────────────
+      - name: Restore ccache
+        id: ccache-restore
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ needs.validate.outputs.cache_key }}-${{ github.run_number }}
+          restore-keys: |
+            ccache-${{ needs.validate.outputs.cache_key }}-
+            ccache-llvm-android-${{ env.LLVM_TAG }}-
+
+      - name: Configure ccache
+        run: |
+          ccache --max-size="${CCACHE_MAXSIZE}"
+          ccache --set-config=compression=true
+          ccache --set-config=compression_level=6
+          ccache -z
+          ccache --show-config
+
+      # ── 4. Android NDK ────────────────────────────────────────────────────
+      - name: Cache Android NDK ${{ env.NDK_VERSION }}
+        id: ndk-cache
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ env.NDK_HOME }}
+          key: android-ndk-${{ env.NDK_VERSION }}
+
+      - name: Install Android NDK ${{ env.NDK_VERSION }}
+        if: steps.ndk-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          NDK_ZIP="android-ndk-${NDK_VERSION}-linux.zip"
+          wget -q --show-progress --progress=dot:giga \
+            -O "/tmp/${NDK_ZIP}" \
+            "https://dl.google.com/android/repository/${NDK_ZIP}"
+          sudo unzip -q "/tmp/${NDK_ZIP}" -d /opt
+          sudo mv "/opt/android-ndk-${NDK_VERSION}" "${NDK_HOME}"
+          rm -f "/tmp/${NDK_ZIP}"
+          echo "NDK installed at ${NDK_HOME}"
+
+      - name: Export NDK paths
+        run: |
+          echo "ANDROID_NDK_HOME=${NDK_HOME}" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK=${NDK_HOME}"       >> "$GITHUB_ENV"
+          echo "${NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_PATH"
+
+      # ── 5. Python venv + llvm_android runtime dependencies ───────────────
+      - name: Set up Python venv
+        run: |
+          set -euo pipefail
+          python3 -m venv "$GITHUB_WORKSPACE/venv"
+          source "$GITHUB_WORKSPACE/venv/bin/activate"
+          pip install --upgrade pip
+          pip install dataclasses requests lxml pyyaml typing_extensions
+          echo "$GITHUB_WORKSPACE/venv/bin" >> "$GITHUB_PATH"
+          echo "VIRTUAL_ENV=$GITHUB_WORKSPACE/venv" >> "$GITHUB_ENV"
+
+      # ── 6. Stage 1 – Bootstrap host Clang ────────────────────────────────
+      #
+      # NDK's bundled Clang (stage-0) compiles a minimal LLVM 22 Clang that
+      # we then use as the stage-2 compiler.  This mirrors the multi-stage
+      # approach in toolchain/llvm_android/do_build.py.
+      # ──────────────────────────────────────────────────────────────────────
+      - name: "Stage 1 – Bootstrap host Clang"
+        id: stage1
+        run: |
+          set -euo pipefail
+
+          STAGE1_BUILD="${BUILD_DIR}/stage1-build"
+          STAGE1_INSTALL="${BUILD_DIR}/stage1-install"
+          mkdir -p "${STAGE1_BUILD}" "${STAGE1_INSTALL}"
+
+          NDK_BIN="${NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          "${NDK_BIN}/clang" --version   # sanity-check stage-0
+
+          cmake -G Ninja \
+            -S "$GITHUB_WORKSPACE/llvm" \
+            -B "${STAGE1_BUILD}" \
+            \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="${STAGE1_INSTALL}" \
+            -DCMAKE_C_COMPILER="${NDK_BIN}/clang" \
+            -DCMAKE_CXX_COMPILER="${NDK_BIN}/clang++" \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            \
+            -DLLVM_TARGETS_TO_BUILD="AArch64;ARM;X86;WebAssembly;RISCV" \
+            -DLLVM_ENABLE_PROJECTS="clang;lld" \
+            -DLLVM_ENABLE_RUNTIMES="" \
+            \
+            -DLLVM_ENABLE_ASSERTIONS=OFF \
+            -DLLVM_ENABLE_LTO=OFF \
+            -DLLVM_ENABLE_UNWIND_TABLES=OFF \
+            -DLLVM_INCLUDE_TESTS=OFF \
+            -DLLVM_INCLUDE_BENCHMARKS=OFF \
+            -DLLVM_INCLUDE_DOCS=OFF \
+            -DLLVM_BUILD_LLVM_DYLIB=OFF \
+            -DLLVM_LINK_LLVM_DYLIB=OFF \
+            \
+            -DCLANG_ENABLE_BOOTSTRAP=OFF \
+            -DCLANG_DEFAULT_LINKER=lld \
+            \
+            -DLLVM_PARALLEL_COMPILE_JOBS="$(nproc)" \
+            -DLLVM_PARALLEL_LINK_JOBS="$(( $(nproc) / 2 < 1 ? 1 : $(nproc) / 2 ))"
+
+          echo "::group::Stage 1 – ninja"
+          ninja -C "${STAGE1_BUILD}" \
+            install-clang \
+            install-clang-resource-headers \
+            install-lld
+          echo "::endgroup::"
+
+          # Verify stage-1 output
+          "${STAGE1_INSTALL}/bin/clang"  --version
+          "${STAGE1_INSTALL}/bin/ld.lld" --version
+
+          # Expose to subsequent steps
+          echo "STAGE1_INSTALL=${STAGE1_INSTALL}" >> "$GITHUB_ENV"
+          echo "stage1_install=${STAGE1_INSTALL}" >> "$GITHUB_OUTPUT"
+
+      # ── 7. Stage 2 – Full host Clang + Android runtimes ──────────────────
+      - name: "Stage 2 – Full host Clang"
+        id: stage2
+        run: |
+          set -euo pipefail
+
+          STAGE2_BUILD="${BUILD_DIR}/stage2-build"
+          STAGE2_INSTALL="${BUILD_DIR}/stage2-install"
+          mkdir -p "${STAGE2_BUILD}" "${STAGE2_INSTALL}"
+
+          S1="${STAGE1_INSTALL}/bin"
+
+          LTO_FLAG="${{ inputs.enable_lto == 'true'
+            && '-DLLVM_ENABLE_LTO=Thin'
+            || '-DLLVM_ENABLE_LTO=OFF' }}"
+          TESTS_FLAG="${{ inputs.skip_tests == 'true'
+            && '-DLLVM_INCLUDE_TESTS=OFF'
+            || '-DLLVM_INCLUDE_TESTS=ON' }}"
+
+          cmake -G Ninja \
+            -S "$GITHUB_WORKSPACE/llvm" \
+            -B "${STAGE2_BUILD}" \
+            \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="${STAGE2_INSTALL}" \
+            -DCMAKE_C_COMPILER="${S1}/clang" \
+            -DCMAKE_CXX_COMPILER="${S1}/clang++" \
+            -DCMAKE_LINKER="${S1}/ld.lld" \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            \
+            -DLLVM_TARGETS_TO_BUILD="AArch64;ARM;X86;WebAssembly;RISCV" \
+            -DLLVM_ENABLE_PROJECTS="clang;clang-tools-extra;lld;lldb;bolt" \
+            -DLLVM_ENABLE_RUNTIMES="compiler-rt;libcxx;libcxxabi;libunwind;openmp" \
+            \
+            ${LTO_FLAG} \
+            ${TESTS_FLAG} \
+            -DLLVM_ENABLE_ASSERTIONS=OFF \
+            -DLLVM_ENABLE_UNWIND_TABLES=OFF \
+            -DLLVM_INCLUDE_BENCHMARKS=OFF \
+            -DLLVM_INCLUDE_DOCS=OFF \
+            -DLLVM_BUILD_LLVM_DYLIB=ON \
+            -DLLVM_LINK_LLVM_DYLIB=OFF \
+            \
+            -DCLANG_DEFAULT_LINKER=lld \
+            -DCLANG_DEFAULT_RTLIB=compiler-rt \
+            -DCLANG_DEFAULT_UNWINDLIB=libunwind \
+            -DCLANG_DEFAULT_CXX_STDLIB=libc++ \
+            \
+            -DLIBCXX_USE_COMPILER_RT=ON \
+            -DLIBCXXABI_USE_COMPILER_RT=ON \
+            -DLIBCXXABI_USE_LLVM_UNWINDER=ON \
+            -DLIBUNWIND_USE_COMPILER_RT=ON \
+            \
+            -DLLVM_PARALLEL_COMPILE_JOBS="$(nproc)" \
+            -DLLVM_PARALLEL_LINK_JOBS="$(( $(nproc) / 2 < 1 ? 1 : $(nproc) / 2 ))"
+
+          echo "::group::Stage 2 – ninja"
+          ninja -C "${STAGE2_BUILD}" install
+          echo "::endgroup::"
+
+          "${STAGE2_INSTALL}/bin/clang" --version
+          "${STAGE2_INSTALL}/bin/clang" -v 2>&1 | grep "InstalledDir"
+
+          echo "STAGE2_INSTALL=${STAGE2_INSTALL}" >> "$GITHUB_ENV"
+          echo "stage2_install=${STAGE2_INSTALL}" >> "$GITHUB_OUTPUT"
+
+      # ── 8. LLVM unit tests (skippable) ───────────────────────────────────
+      - name: "Stage 2 – check-clang / check-lld"
+        if: inputs.skip_tests != 'true'
+        run: |
+          set -euo pipefail
+          echo "::group::check-clang"
+          ninja -C "${BUILD_DIR}/stage2-build" check-clang || \
+            echo "::warning::check-clang had failures – see log above"
+          echo "::endgroup::"
+          echo "::group::check-lld"
+          ninja -C "${BUILD_DIR}/stage2-build" check-lld || \
+            echo "::warning::check-lld had failures – see log above"
+          echo "::endgroup::"
+
+      # ── 9. Cross-compile Android runtimes (four ABIs) ────────────────────
+      #
+      # build_android_runtime.sh lives at scripts/ in the merged repo.
+      # Signature: <triple> <abi> <api> <build-dir> <install-dir>
+      # ──────────────────────────────────────────────────────────────────────
+      - name: "Android runtimes – arm (armeabi-v7a)"
+        run: |
+          bash "$GITHUB_WORKSPACE/scripts/build_android_runtime.sh" \
+            arm-linux-androideabi armeabi-v7a "${ANDROID_API_MIN}" \
+            "${BUILD_DIR}/android-arm" \
+            "${BUILD_DIR}/android-install/arm"
+
+      - name: "Android runtimes – arm64 (arm64-v8a)"
+        run: |
+          bash "$GITHUB_WORKSPACE/scripts/build_android_runtime.sh" \
+            aarch64-linux-android arm64-v8a "${ANDROID_API_MIN}" \
+            "${BUILD_DIR}/android-arm64" \
+            "${BUILD_DIR}/android-install/arm64"
+
+      - name: "Android runtimes – x86"
+        run: |
+          bash "$GITHUB_WORKSPACE/scripts/build_android_runtime.sh" \
+            i686-linux-android x86 "${ANDROID_API_MIN}" \
+            "${BUILD_DIR}/android-x86" \
+            "${BUILD_DIR}/android-install/x86"
+
+      - name: "Android runtimes – x86_64"
+        run: |
+          bash "$GITHUB_WORKSPACE/scripts/build_android_runtime.sh" \
+            x86_64-linux-android x86_64 "${ANDROID_API_MIN}" \
+            "${BUILD_DIR}/android-x86_64" \
+            "${BUILD_DIR}/android-install/x86_64"
+
+      # ── 10. Assemble final package ────────────────────────────────────────
+      - name: Assemble toolchain package
+        id: package
+        run: |
+          set -euo pipefail
+          mkdir -p "${PACKAGE_DIR}"
+
+          PACKAGE_NAME="clang+llvm-${LLVM_TAG}-android"
+          STAGING="${PACKAGE_DIR}/${PACKAGE_NAME}"
+
+          # Host toolchain
+          cp -a "${STAGE2_INSTALL}" "${STAGING}"
+
+          # Per-ABI runtime trees → lib/clang/<major>/lib/android/<abi>/
+          RUNTIME_SUBDIR="${STAGING}/lib/clang/${LLVM_VERSION}/lib/android"
+          for ABI in arm arm64 x86 x86_64; do
+            SRC="${BUILD_DIR}/android-install/${ABI}"
+            if [[ -d "${SRC}" ]]; then
+              mkdir -p "${RUNTIME_SUBDIR}/${ABI}"
+              cp -a "${SRC}/." "${RUNTIME_SUBDIR}/${ABI}/"
+            fi
+          done
+
+          # Strip host ELF binaries
+          echo "Stripping host binaries…"
+          find "${STAGING}/bin" -type f -perm /111 | while read -r BIN; do
+            if file "${BIN}" | grep -q 'ELF.*executable'; then
+              strip --strip-unneeded "${BIN}" 2>/dev/null || true
+            fi
+          done
+
+          # Build provenance document
+          cat > "${STAGING}/clang_source_info.md" <<EOF
+# LLVM/Clang Build Info
+
+Built by:      GitHub Actions – Build LLVM 22.1.7 for Android
+LLVM tag:      ${LLVM_TAG}
+Repo SHA:      ${{ needs.validate.outputs.repo_sha }}
+NDK version:   ${NDK_VERSION}
+Build date:    $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+Runner OS:     ${{ runner.os }}
+GH run:        ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+EOF
+
+          # Create tarball
+          TARBALL="${PACKAGE_DIR}/${PACKAGE_NAME}.tar.xz"
+          echo "Creating ${TARBALL}…"
+          XZ_OPT="-9 -T0" tar -C "${PACKAGE_DIR}" -cJf "${TARBALL}" "${PACKAGE_NAME}"
+
+          TARBALL_SHA256=$(sha256sum "${TARBALL}" | awk '{print $1}')
+          echo "${TARBALL_SHA256}  ${PACKAGE_NAME}.tar.xz" > "${TARBALL}.sha256"
+
+          echo "tarball=${TARBALL}"              >> "$GITHUB_OUTPUT"
+          echo "tarball_sha=${TARBALL_SHA256}"   >> "$GITHUB_OUTPUT"
+          echo "package_name=${PACKAGE_NAME}"    >> "$GITHUB_OUTPUT"
+          echo "::notice::Package: ${PACKAGE_NAME}.tar.xz  SHA256=${TARBALL_SHA256}"
+
+      # ── 11. SBOM (SPDX 2.3 JSON) ──────────────────────────────────────────
+      #
+      # Note: the Python script must be at column 0 inside the heredoc.
+      # Leading-whitespace indentation causes IndentationError.
+      # ──────────────────────────────────────────────────────────────────────
+      - name: Generate SBOM (SPDX JSON)
+        run: |
+          set -euo pipefail
+          pip install spdx-tools --quiet 2>/dev/null || true
+          python3 - <<'PYEOF'
+import json, datetime, os, pathlib
+
+tag      = os.environ["LLVM_TAG"]
+repo_sha = os.environ.get("GITHUB_SHA", "unknown")
+now      = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+
+sbom = {
+    "SPDXID": "SPDXRef-DOCUMENT",
+    "spdxVersion": "SPDX-2.3",
+    "creationInfo": {
+        "created": now,
+        "creators": ["Tool: GitHub Actions llvm-android-build"],
+        "licenseListVersion": "3.22",
+    },
+    "name": f"llvm-android-{tag}",
+    "dataLicense": "CC0-1.0",
+    "documentNamespace": (
+        f"https://github.com/llvm/llvm-project/releases/tag/{tag}"
+    ),
+    "packages": [
+        {
+            "SPDXID": "SPDXRef-llvm-project",
+            "name": "llvm-project",
+            "version": tag,
+            "downloadLocation": (
+                f"https://github.com/llvm/llvm-project/archive/"
+                f"refs/tags/{tag}.tar.gz"
+            ),
+            "filesAnalyzed": False,
+            "versionInfo": tag,
+            "externalRefs": [
+                {
+                    "referenceCategory": "PACKAGE-MANAGER",
+                    "referenceType": "purl",
+                    "referenceLocator": (
+                        f"pkg:github/llvm/llvm-project@{repo_sha}"
+                    ),
+                }
+            ],
+            "licenseConcluded": "Apache-2.0 WITH LLVM-exception",
+            "licenseDeclared": "Apache-2.0 WITH LLVM-exception",
+            "copyrightText": "NOASSERTION",
+        }
+    ],
+}
+
+out = pathlib.Path(os.environ["PACKAGE_DIR"]) / f"sbom-{tag}-android.spdx.json"
+out.write_text(json.dumps(sbom, indent=2))
+print(f"SBOM written → {out}")
+PYEOF
+
+      # ── 12. Upload artifacts ──────────────────────────────────────────────
+      - name: Upload toolchain artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.package.outputs.package_name }}
+          path: |
+            ${{ steps.package.outputs.tarball }}
+            ${{ steps.package.outputs.tarball }}.sha256
+          retention-days: 30
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom-${{ env.LLVM_TAG }}-android
+          path: ${{ env.PACKAGE_DIR }}/sbom-${{ env.LLVM_TAG }}-android.spdx.json
+          retention-days: 90
+
+      # ── 13. Save ccache (always – even on failure) ─────────────────────────
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ needs.validate.outputs.cache_key }}-${{ github.run_number }}
+
+      - name: ccache statistics
+        if: always()
+        run: ccache --show-stats
+
+      # ── 14. Job summary ────────────────────────────────────────────────────
+      - name: Write job summary
+        if: always()
+        run: |
+          {
+            echo "## LLVM ${LLVM_TAG} Android Build"
+            echo ""
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| LLVM tag | \`${LLVM_TAG}\` |"
+            echo "| Repo SHA | \`${{ needs.validate.outputs.repo_sha }}\` |"
+            echo "| NDK | \`${NDK_VERSION}\` |"
+            echo "| ThinLTO | \`${{ inputs.enable_lto || 'false' }}\` |"
+            echo "| Tests skipped | \`${{ inputs.skip_tests || 'false' }}\` |"
+            if [[ -f "${{ steps.package.outputs.tarball }}.sha256" ]]; then
+              echo "| Tarball SHA256 | \`${{ steps.package.outputs.tarball_sha }}\` |"
+            fi
+            echo ""
+            echo "### Stage 1 install"
+            echo "\`\`\`"
+            ls -lh "${BUILD_DIR}/stage1-install/bin" 2>/dev/null | tail -30 \
+              || echo "(not found)"
+            echo "\`\`\`"
+            echo ""
+            echo "### Stage 2 install"
+            echo "\`\`\`"
+            ls -lh "${BUILD_DIR}/stage2-install/bin" 2>/dev/null | tail -40 \
+              || echo "(not found)"
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# JOB 3 – Smoke-test (github-hosted, cheap)
+#
+# Downloads the toolchain artifact and runs basic sanity checks.
+# A minimal NDK is installed here solely to provide the arm64-android
+# sysroot for the cross-compile check.
+# ═══════════════════════════════════════════════════════════════════════════
+  smoke-test:
+    name: "✅ Smoke-test toolchain"
+    needs: [validate, build]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    env:
+      # Local NDK install for the cross-compile sysroot check.
+      SMOKE_NDK_HOME: "/tmp/smoke-ndk"
+
+    steps:
+      - name: Download toolchain artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.build.outputs.package_name }}
+          path: /tmp/toolchain-pkg
+
+      - name: Extract tarball
+        run: |
+          set -euo pipefail
+          TARBALL=$(find /tmp/toolchain-pkg -name '*.tar.xz' | head -1)
+          echo "Extracting ${TARBALL}…"
+          tar -xJf "${TARBALL}" -C /tmp
+          EXTRACTED=$(tar -tJf "${TARBALL}" | head -1 | cut -d/ -f1)
+          echo "TOOLCHAIN=/tmp/${EXTRACTED}" >> "$GITHUB_ENV"
+
+      - name: Verify host Clang version
+        run: |
+          "${TOOLCHAIN}/bin/clang"   --version
+          "${TOOLCHAIN}/bin/clang++" --version
+          "${TOOLCHAIN}/bin/ld.lld"  --version
+          "${TOOLCHAIN}/bin/llvm-ar" --version
+
+      - name: "Smoke – host: compile hello.c"
+        run: |
+          cat > /tmp/hello.c <<'EOF'
+#include <stdio.h>
+int main(void) { puts("LLVM 22.1.7 for Android – OK"); return 0; }
+EOF
+          "${TOOLCHAIN}/bin/clang" -O2 /tmp/hello.c -o /tmp/hello
+          /tmp/hello
+
+      - name: Install minimal NDK (sysroot only)
+        id: smoke-ndk
+        run: |
+          set -euo pipefail
+          NDK_ZIP="android-ndk-${NDK_VERSION}-linux.zip"
+          echo "Downloading NDK ${NDK_VERSION} for sysroot…"
+          wget -q --show-progress --progress=dot:giga \
+            -O "/tmp/${NDK_ZIP}" \
+            "https://dl.google.com/android/repository/${NDK_ZIP}"
+          unzip -q "/tmp/${NDK_ZIP}" -d /tmp
+          mv "/tmp/android-ndk-${NDK_VERSION}" "${SMOKE_NDK_HOME}"
+          rm -f "/tmp/${NDK_ZIP}"
+          SYSROOT="${SMOKE_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+          echo "smoke_sysroot=${SYSROOT}" >> "$GITHUB_OUTPUT"
+          echo "NDK sysroot at: ${SYSROOT}"
+
+      - name: "Smoke – arm64-android21: cross-compile hello.c"
+        run: |
+          cat > /tmp/hello_android.c <<'EOF'
+#include <stdio.h>
+int main(void) { puts("Hello from LLVM 22.1.7 arm64-android"); return 0; }
+EOF
+          "${TOOLCHAIN}/bin/clang" \
+            --target=aarch64-linux-android21 \
+            --sysroot="${{ steps.smoke-ndk.outputs.smoke_sysroot }}" \
+            -O2 /tmp/hello_android.c -o /tmp/hello_android
+          file /tmp/hello_android
+          echo "arm64-android cross-compile OK"
+
+      - name: Verify tarball checksum
+        run: |
+          cd /tmp/toolchain-pkg
+          sha256sum -c *.sha256
+          echo "SHA256 verification passed."
+
+# ═══════════════════════════════════════════════════════════════════════════
+# JOB 4 – Publish GitHub Release (optional)
+#
+# Triggers on version tags (llvmorg-*) or when upload_release == 'true'.
+# ═══════════════════════════════════════════════════════════════════════════
+  release:
+    name: "🚀 Publish GitHub Release"
+    needs: [validate, build, smoke-test]
+    if: >
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) ||
+      (github.event_name == 'workflow_dispatch' && inputs.upload_release == 'true')
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: /tmp/release-assets
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
+        with:
+          tag_name:   "${{ env.LLVM_TAG }}-android"
+          name:       "LLVM ${{ env.LLVM_TAG }} – Android toolchain"
+          draft:      false
+          prerelease: false
+          files:      /tmp/release-assets/**/*
+          body: |
+            ## LLVM ${{ env.LLVM_TAG }} – Android Clang/LLVM Toolchain
+
+            Built from the merged AOSP + official LLVM repository at
+            commit `${{ needs.validate.outputs.repo_sha }}`.
+
+            ### Included components
+            | Component | Notes |
+            |---|---|
+            | clang / clang++ / clangd / clang-tidy / clang-format | Host x86_64 |
+            | lld (ld.lld / ld64.lld / lld-link / wasm-ld) | Host x86_64 |
+            | lldb | Host x86_64 |
+            | BOLT (`llvm-bolt` / `merge-fdata`) | Host x86_64 |
+            | Full `llvm-*` binutil suite | Host x86_64 |
+            | compiler-rt builtins | armeabi-v7a / arm64-v8a / x86 / x86_64 API ${{ env.ANDROID_API_MIN }}+ |
+            | libunwind / libc++ / libc++abi | All four Android ABIs |
+            | OpenMP runtime | All four Android ABIs |
+
+            ### Verification
+            ```sh
+            sha256sum -c *.sha256
+            ```
+
+            | Field | Value |
+            |---|---|
+            | Repo SHA | `${{ needs.validate.outputs.repo_sha }}` |
+            | NDK | `${{ env.NDK_VERSION }}` |
+            | ThinLTO | `${{ inputs.enable_lto || 'false' }}` |
