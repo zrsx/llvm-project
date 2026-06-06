@@ -75,7 +75,7 @@ env:
   LLVM_VERSION:       "22"           # major version, used for resource-dir paths
   ANDROID_API_MIN:    "21"
   ANDROID_API_MAX:    "35"
-  NDK_VERSION:        "r27c"
+  NDK_VERSION:        "r27d"
   NDK_HOME:           "/opt/android-ndk"
   PYTHON_VERSION:     "3.11"
   CMAKE_VERSION:      "3.28.3"
@@ -164,7 +164,13 @@ jobs:
           fetch-depth: 1
           submodules:  recursive
           ref: main
-
+      - name: Checkout llvm_android
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 1
+          repository: android/toolchain_llvm_android
+          ref: main
+          submodules:  recursive
       # ── 1. Sanity-check expected source layout ───────────────────────────
       - name: Verify repo layout
         run: |
@@ -187,7 +193,7 @@ jobs:
           set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            build-essential git curl wget unzip zip xz-utils \
+            build-essential git curl wget unzip zip xz-utils ccache \
             python3 python3-pip python3-venv \
             cmake ninja-build ccache \
             pkg-config libssl-dev \
@@ -202,7 +208,7 @@ jobs:
             swig doxygen graphviz \
             mingw-w64 tzdata \
             patchelf file jq
-          python3 -m pip install --upgrade pip setuptools wheel
+          python3 -m pip install --upgrade pip setuptools wheel ensurepip
 
       # ── 3. ccache restore ────────────────────────────────────────────────
       - name: Restore ccache
