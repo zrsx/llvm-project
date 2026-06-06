@@ -19,7 +19,7 @@ on:
 
 jobs:
   build-metrics-container:
-    if: github.repository_owner == 'llvm'
+    if: github.repository_owner == 'zrsx'
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout LLVM
