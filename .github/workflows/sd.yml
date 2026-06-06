@@ -460,16 +460,16 @@ jobs:
 
           # Build provenance document
           cat > "${STAGING}/clang_source_info.md" <<EOF
-# LLVM/Clang Build Info
-
-Built by:      GitHub Actions – Build LLVM 22.1.7 for Android
-LLVM tag:      ${LLVM_TAG}
-Repo SHA:      ${{ needs.validate.outputs.repo_sha }}
-NDK version:   ${NDK_VERSION}
-Build date:    $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-Runner OS:     ${{ runner.os }}
-GH run:        ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-EOF
+          # LLVM/Clang Build Info
+          
+          Built by:      GitHub Actions – Build LLVM 22.1.7 for Android
+          LLVM tag:      ${LLVM_TAG}
+          Repo SHA:      ${{ needs.validate.outputs.repo_sha }}
+          NDK version:   ${NDK_VERSION}
+          Build date:    $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          Runner OS:     ${{ runner.os }}
+          GH run:        ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EOF
 
           # Create tarball
           TARBALL="${PACKAGE_DIR}/${PACKAGE_NAME}.tar.xz"
@@ -494,56 +494,56 @@ EOF
           set -euo pipefail
           pip install spdx-tools --quiet 2>/dev/null || true
           python3 - <<'PYEOF'
-import json, datetime, os, pathlib
+          import json, datetime, os, pathlib
+          
+          tag      = os.environ["LLVM_TAG"]
+          repo_sha = os.environ.get("GITHUB_SHA", "unknown")
+          now      = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
 
-tag      = os.environ["LLVM_TAG"]
-repo_sha = os.environ.get("GITHUB_SHA", "unknown")
-now      = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+          sbom = {
+              "SPDXID": "SPDXRef-DOCUMENT",
+                        "spdxVersion": "SPDX-2.3",
+              "creationInfo": {
+                  "created": now,
+                  "creators": ["Tool: GitHub Actions llvm-android-build"],
+                  "licenseListVersion": "3.22",
+              },
+              "name": f"llvm-android-{tag}",
+              "dataLicense": "CC0-1.0",
+              "documentNamespace": (
+                  f"https://github.com/llvm/llvm-project/releases/tag/{tag}"
+              ),
+              "packages": [
+                  {
+                      "SPDXID": "SPDXRef-llvm-project",
+                      "name": "llvm-project",
+                      "version": tag,
+                      "downloadLocation": (
+                          f"https://github.com/llvm/llvm-project/archive/"
+                          f"refs/tags/{tag}.tar.gz"
+                      ),
+                      "filesAnalyzed": False,
+                      "versionInfo": tag,
+                      "externalRefs": [
+                          {
+                              "referenceCategory": "PACKAGE-MANAGER",
+                              "referenceType": "purl",
+                              "referenceLocator": (
+                                  f"pkg:github/llvm/llvm-project@{repo_sha}"
+                              ),
+                          }
+                      ],
+                      "licenseConcluded": "Apache-2.0 WITH LLVM-exception",
+                      "licenseDeclared": "Apache-2.0 WITH LLVM-exception",
+                      "copyrightText": "NOASSERTION",
+                  }
+              ],
+          }
 
-sbom = {
-    "SPDXID": "SPDXRef-DOCUMENT",
-    "spdxVersion": "SPDX-2.3",
-    "creationInfo": {
-        "created": now,
-        "creators": ["Tool: GitHub Actions llvm-android-build"],
-        "licenseListVersion": "3.22",
-    },
-    "name": f"llvm-android-{tag}",
-    "dataLicense": "CC0-1.0",
-    "documentNamespace": (
-        f"https://github.com/llvm/llvm-project/releases/tag/{tag}"
-    ),
-    "packages": [
-        {
-            "SPDXID": "SPDXRef-llvm-project",
-            "name": "llvm-project",
-            "version": tag,
-            "downloadLocation": (
-                f"https://github.com/llvm/llvm-project/archive/"
-                f"refs/tags/{tag}.tar.gz"
-            ),
-            "filesAnalyzed": False,
-            "versionInfo": tag,
-            "externalRefs": [
-                {
-                    "referenceCategory": "PACKAGE-MANAGER",
-                    "referenceType": "purl",
-                    "referenceLocator": (
-                        f"pkg:github/llvm/llvm-project@{repo_sha}"
-                    ),
-                }
-            ],
-            "licenseConcluded": "Apache-2.0 WITH LLVM-exception",
-            "licenseDeclared": "Apache-2.0 WITH LLVM-exception",
-            "copyrightText": "NOASSERTION",
-        }
-    ],
-}
-
-out = pathlib.Path(os.environ["PACKAGE_DIR"]) / f"sbom-{tag}-android.spdx.json"
-out.write_text(json.dumps(sbom, indent=2))
-print(f"SBOM written → {out}")
-PYEOF
+          out = pathlib.Path(os.environ["PACKAGE_DIR"]) / f"sbom-{tag}-android.spdx.json"
+          out.write_text(json.dumps(sbom, indent=2))
+          print(f"SBOM written → {out}")
+          PYEOF
 
       # ── 12. Upload artifacts ──────────────────────────────────────────────
       - name: Upload toolchain artifact
@@ -650,9 +650,9 @@ PYEOF
       - name: "Smoke – host: compile hello.c"
         run: |
           cat > /tmp/hello.c <<'EOF'
-#include <stdio.h>
-int main(void) { puts("LLVM 22.1.7 for Android – OK"); return 0; }
-EOF
+          #include <stdio.h>
+          int main(void) { puts("LLVM 22.1.7 for Android – OK"); return 0; }
+          EOF
           "${TOOLCHAIN}/bin/clang" -O2 /tmp/hello.c -o /tmp/hello
           /tmp/hello
 
@@ -675,9 +675,9 @@ EOF
       - name: "Smoke – arm64-android21: cross-compile hello.c"
         run: |
           cat > /tmp/hello_android.c <<'EOF'
-#include <stdio.h>
-int main(void) { puts("Hello from LLVM 22.1.7 arm64-android"); return 0; }
-EOF
+          #include <stdio.h>
+          int main(void) { puts("Hello from LLVM 22.1.7 arm64-android"); return 0; }
+          EOF
           "${TOOLCHAIN}/bin/clang" \
             --target=aarch64-linux-android21 \
             --sysroot="${{ steps.smoke-ndk.outputs.smoke_sysroot }}" \
