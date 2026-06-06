@@ -26,7 +26,7 @@ concurrency:
 
 jobs:
   abi-dump-setup:
-    if: github.repository_owner == 'llvm'
+    if: github.repository_owner == 'zrsx'
     runs-on: ubuntu-24.04
     outputs:
       BASELINE_REF: ${{ steps.vars.outputs.BASELINE_REF }}
@@ -81,7 +81,7 @@ jobs:
           fi
 
   abi-dump:
-    if: github.repository_owner == 'llvm'
+    if: github.repository_owner == 'zrsx'
     needs: abi-dump-setup
     runs-on: ubuntu-24.04
     container:
@@ -126,7 +126,7 @@ jobs:
           path: '*${{ matrix.ref }}.abi'
 
   abi-compare:
-    if: github.repository_owner == 'llvm'
+    if: github.repository_owner == 'zrsx'
     runs-on: ubuntu-24.04
     container:
       image: "ghcr.io/llvm/ci-ubuntu-24.04-abi-tests@sha256:ef869c1d087258db22c2b19b93f585d53c0d0e70952aaf02d45866ad26a200a0" #ghcr.io/llvm/ci-ubuntu-24.04-abi-tests:9524b37c503f
