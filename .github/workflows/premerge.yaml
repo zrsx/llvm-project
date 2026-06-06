@@ -132,7 +132,7 @@ jobs:
     if: >-
         github.repository_owner == 'zrsx' &&
         (github.event_name != 'pull_request' || github.event.action != 'closed')
-    runs-on: windows-2022
+    runs-on: ubuntu-latest
     container:
       image: ghcr.io/llvm/ci-windows-2022
     defaults:
