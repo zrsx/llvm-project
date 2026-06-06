@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   version_check:
-    if: github.repository_owner == 'llvm'
+    if: github.repository_owner == 'zrsx'
     runs-on: ubuntu-24.04
     steps:
       - name: Fetch LLVM sources
