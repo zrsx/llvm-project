@@ -35,10 +35,8 @@ jobs:
     name: "Bazel Build/Test"
     # Only run on US Central workers so we only have to keep one cache warm as
     # the cache buckets are per cluster.
-    runs-on:
-      group: llvm-premerge-cluster-us-central
-      labels: llvm-premerge-linux-runners
-    if: github.repository == 'llvm/llvm-project'
+    runs-on: ubuntu-24.04-arm
+    if: github.repository == 'zrsx/llvm-project'
     steps:
       - name: Fetch LLVM sources
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
