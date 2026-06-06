@@ -11,7 +11,7 @@ jobs:
     permissions:
       issues: write
     runs-on: ubuntu-24.04
-    if: github.repository == 'llvm/llvm-project'
+    if: github.repository == 'zrsx/llvm-project'
     steps:
       - uses: llvm/actions/issue-labeler@89a8cf80982d830faab019237860b344a6390c30 # main
         with:
