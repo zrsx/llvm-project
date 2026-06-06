@@ -14,7 +14,7 @@ jobs:
       issues: write
       pull-requests: read
     if: >-
-      github.repository_owner == 'llvm' &&
+      github.repository_owner == 'zrsx' &&
       github.event.label.name == 'infra:commit-access-request'
     runs-on: ubuntu-24.04
     steps:
