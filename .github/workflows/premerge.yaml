@@ -26,7 +26,7 @@ jobs:
   premerge-checks-linux:
     name: Build and Test Linux${{ (startsWith(matrix.runs-on, 'depot-ubuntu-24.04-arm') && ' AArch64') || '' }}
     if: >-
-        github.repository_owner == 'llvm' &&
+        github.repository_owner == 'zrsx' &&
         (github.event_name != 'pull_request' || github.event.action != 'closed')
     strategy:
       fail-fast: false
@@ -130,7 +130,7 @@ jobs:
   premerge-checks-windows:
     name: Build and Test Windows
     if: >-
-        github.repository_owner == 'llvm' &&
+        github.repository_owner == 'zrsx' &&
         (github.event_name != 'pull_request' || github.event.action != 'closed')
     runs-on: llvm-premerge-windows-2022-runners
     defaults:
@@ -197,7 +197,7 @@ jobs:
     name: MacOS Premerge Checks
     runs-on: macos-14
     if: >-
-      github.repository_owner == 'llvm' &&
+      github.repository_owner == 'zrsx' &&
       (startswith(github.ref_name, 'release/') ||
        startswith(github.base_ref, 'release/')) &&
       (github.event_name != 'pull_request' || github.event.action != 'closed')
