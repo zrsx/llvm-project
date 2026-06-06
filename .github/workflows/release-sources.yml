@@ -43,7 +43,7 @@ jobs:
   inputs:
     name: Collect Job Inputs
     if: >-
-      github.repository_owner == 'llvm' &&
+      github.repository_owner == 'zrsx' &&
       github.event.action != 'closed'
     outputs:
       ref: ${{ steps.inputs.outputs.ref }}
@@ -63,7 +63,7 @@ jobs:
 
   release-sources:
     name: Package Release Sources
-    if: github.repository_owner == 'llvm'
+    if: github.repository_owner == 'zrsx'
     runs-on: ubuntu-24.04
     outputs:
       digest: ${{ steps.digest.outputs.digest }}
