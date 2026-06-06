@@ -166,8 +166,8 @@ jobs:
           ref: main
       - name: Clone llvm_android
         run: |
-          apt install git
-          git clone \
+          sudo apt install git 
+          sudo git clone \
             --depth=1 \
             --single-branch \
             --branch=main \
