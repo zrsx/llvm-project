@@ -131,9 +131,9 @@ jobs:
 # to use a github-hosted runner (much slower, may run out of disk).
 # ═══════════════════════════════════════════════════════════════════════════
   build:
-    name: "🔨 Build LLVM ${{ env.LLVM_TAG }} for Android"
+    name: "🔨 Build LLVM ${{ vars.LLVM_TAG }} for Android"
     needs: validate
-    runs-on: [self-hosted, llvm-builder, linux, X64]
+    runs-on: ubuntu-22.04-arm
     timeout-minutes: 360
     permissions:
       contents: read
@@ -144,6 +144,17 @@ jobs:
       tarball_sha:  ${{ steps.package.outputs.tarball_sha }}
 
     steps:
+      - name: Optimize Runner Disk Space
+        run: |
+          echo "=== Disk space before cleanup ==="
+          df -h
+          
+          # Clean up default virtual environment applications not required for C++ builds
+          sudo rm -rf /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force || true
+          
+          echo "=== Disk space after cleanup ==="
+          df -h
       # ── 0. Checkout merged repo ──────────────────────────────────────────
       #   Both llvm-project sources and AOSP toolchain/llvm_android scripts
       #   live in this single repo.  A shallow clone is sufficient.
@@ -168,7 +179,7 @@ jobs:
             echo "::error::Check that this workflow matches the repo layout."
             exit 1
           fi
-          echo "Repo layout OK."
+          echo "Repo layout OK."     
 
       # ── 2. System packages ───────────────────────────────────────────────
       - name: Install system dependencies
