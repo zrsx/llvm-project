@@ -19,7 +19,7 @@ jobs:
   test-python:
     name: "Check Python Tests"
     runs-on: ubuntu-24.04
-    if: github.repository == 'llvm/llvm-project'
+    if: github.repository == 'zrsx/llvm-project'
     steps:
       - name: Fetch LLVM sources
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1

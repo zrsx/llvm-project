@@ -32,7 +32,7 @@ concurrency:
 jobs:
   post-commit-analyzer:
     if: >-
-      github.repository_owner == 'llvm' &&
+      github.repository_owner == 'zrsx' &&
       github.event.action != 'closed'
     runs-on: ubuntu-24.04
     container:

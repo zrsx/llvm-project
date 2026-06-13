@@ -20,7 +20,7 @@ jobs:
   audit:
     name: "Release Asset Audit"
     runs-on: ubuntu-24.04
-    if: github.repository == 'llvm/llvm-project'
+    if: github.repository == 'zrsx/llvm-project'
     steps:
       - name: Checkout LLVM
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
@@ -47,7 +47,7 @@ jobs:
     name: "Notify Audit Failed"
     runs-on: ubuntu-24.04
     if: >-
-      github.repository == 'llvm/llvm-project' &&
+      github.repository == 'zrsx/llvm-project' &&
       github.event_name != 'pull_request' &&
       failure()
     needs:
