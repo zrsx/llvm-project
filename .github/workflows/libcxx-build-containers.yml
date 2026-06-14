@@ -25,7 +25,7 @@ on:
 jobs:
   build-and-push:
     runs-on: ubuntu-24.04
-    if: github.repository_owner == 'llvm'
+    if: github.repository_owner == 'zrsx'
     permissions:
       packages: write
 

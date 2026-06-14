@@ -12,7 +12,7 @@ on:
 jobs:
   auto-subscribe:
     runs-on: ubuntu-24.04
-    if: github.repository == 'llvm/llvm-project'
+    if: github.repository == 'zrsx/llvm-project'
     steps:
       - uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
         with:

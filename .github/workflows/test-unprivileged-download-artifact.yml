@@ -18,7 +18,7 @@ on:
 jobs:
   upload-test-artifact:
     name: Upload Test Artifact
-    if: github.repository_owner == 'llvm'
+    if: github.repository_owner == 'zrsx'
     runs-on: ubuntu-24.04
     steps:
       - name: Create Test Files
@@ -41,7 +41,7 @@ jobs:
 
   test-download:
     name: Test Unprivileged Download Artifact
-    if: github.repository_owner == 'llvm'
+    if: github.repository_owner == 'zrsx'
     runs-on: ubuntu-24.04
     needs: [ upload-test-artifact ]
     steps:

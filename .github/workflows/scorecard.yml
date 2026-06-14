@@ -22,7 +22,7 @@ jobs:
   analysis:
     name: Scorecard analysis
     runs-on: ubuntu-24.04
-    if: github.repository == 'llvm/llvm-project'
+    if: github.repository == 'zrsx/llvm-project'
     permissions:
       # Needed to upload the results to code-scanning dashboard.
       security-events: write

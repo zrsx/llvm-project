@@ -22,7 +22,7 @@ concurrency:
 
 jobs:
   check_spirv:
-    if: github.repository_owner == 'llvm'
+    if: github.repository_owner == 'zrsx'
     name: Test MLIR SPIR-V
     runs-on: ubuntu-24.04
     container:

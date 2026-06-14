@@ -15,7 +15,7 @@ on:
 
 jobs:
   code_linter:
-    if: github.repository_owner == 'llvm'
+    if: github.repository_owner == 'zrsx'
     runs-on: ubuntu-24.04
     defaults:
       run:
