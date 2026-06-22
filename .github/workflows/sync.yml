@@ -33,11 +33,17 @@ jobs:
         run: |
           echo "Starting merge of official 22.1.8..."
           
-          # Merge the specific tag we just fetched (available as FETCH_HEAD)
-          # --allow-unrelated-histories is sometimes needed for shallow hybrid clones
+          # We add --allow-unrelated-histories to force Git to join the trees
+          # We use -X theirs to favor upstream changes in case of minor metadata conflicts, 
+          # OR leave it out if you want to manually resolve every conflict.
           git merge FETCH_HEAD --no-ff \
+            --allow-unrelated-histories \
             -m "Merge official LLVM 22.1.8" \
-            -m "Source: https://github.com/llvm/llvm-project/releases/tag/llvmorg-22.1.8"
+            -m "Source: https://github.com/llvm/llvm-project/releases/tag/llvmorg-22.1.8" || {
+              echo "Merge conflicts detected! Listing files:"
+              git status --short
+              exit 1 
+            }
 
       - name: Push to Mirror
         run: |
