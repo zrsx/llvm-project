@@ -21,9 +21,9 @@ jobs:
             dir: "llvm-project.git"
             target_branch: "aosp"
             
-          - name: "LLVM 22.1.7"
-            clone_cmd: "git clone --bare --single-branch --branch llvmorg-22.1.7 https://github.com/llvm/llvm-project.git llvm-project-22.1.7.git"
-            dir: "llvm-project-22.1.7.git"
+          - name: "LLVM 22.1.8"
+            clone_cmd: "git clone --bare --single-branch --branch llvmorg-22.1.8 https://github.com/llvm/llvm-project.git llvm-project-22.1.8.git"
+            dir: "llvm-project-22.1.8.git"
             target_branch: "ollvm"
 
     steps:
