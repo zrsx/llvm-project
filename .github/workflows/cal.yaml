@@ -3,6 +3,9 @@ name: Calculate Revision (AOSP Script Method)
 on:
   workflow_dispatch:
 
+env:
+  ACTIONS_RUNNER_DEBUG: true
+  ACTIONS_STEP_DEBUG: true
 jobs:
   calculate:
     runs-on: ubuntu-24.04-arm
@@ -10,13 +13,13 @@ jobs:
       - name: Checkout Hybrid Repo
         uses: actions/checkout@v7
         with:
-          ref: main
           fetch-depth: 0 # Full history required for rev-list
 
       - name: Run AOSP Logic
         id: aosp_logic
         run: |
           set -euo pipefail
+          git switch main || git switch -c main --track origin/main || true
 
           # 1. Defined checkpoint (revision, SHA)
           CHECKPOINT_REV=500000
@@ -38,6 +41,14 @@ jobs:
 
           echo "r_number=r${FINAL_REV}" >> "$GITHUB_OUTPUT"
           echo "diff=${DIFF}" >> "$GITHUB_OUTPUT"
+          git fetch origin
+          git switch main || git switch -c main --track origin/main || true
+          git rev-list --count --all
+          git rev-list --left-right --count origin/aosp...origin/ollvm
+          git switch aosp || git switch -c aosp --track origin/aosp || true
+          git rev-list --count --all
+          git switch ollvm || git switch -c ollvm --track origin/ollvm || true
+          git rev-list --count --all
 
       - name: Display Summary
         run: |
