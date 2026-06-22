@@ -1,0 +1,46 @@
+name: Merge LLVM 22.1.8 into Hybrid Branch
+
+on:
+  workflow_dispatch: # Manual trigger to control the merge process
+
+jobs:
+  merge-upstream:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Hybrid Repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Full history required for merging
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git Identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add Official LLVM Remote
+        run: |
+          git remote add upstream https://github.com/llvm/llvm-project.git
+          git fetch upstream --tags
+
+      - name: Merge LLVM 22.1.8
+        run: |
+          # Ensure we are on the correct branch (e.g., main or aosp-hybrid)
+          git checkout main
+          
+          echo "Starting merge of llvmorg-22.1.8..."
+          
+          # Merge the official tag. 
+          # --no-ff creates a merge commit which is better for tracking hybrid history
+          # -m provides a clear commit message
+          git merge upstream/llvmorg-22.1.8 --no-ff \
+            -m "Merge official LLVM 22.1.8 into hybrid branch" \
+            -m "Updating base from 22.1.7 to 22.1.8 while preserving AOSP modifications."
+
+      - name: Push Updated Hybrid Branch
+        if: success()
+        run: |
+          git push origin main
