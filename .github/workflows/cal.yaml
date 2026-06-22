@@ -45,8 +45,8 @@ jobs:
           git fetch origin
           git rev-list --count --all
           git rev-list --left-right --count origin/aosp...origin/ollvm
-          git rev-list --count origin/aosp
-          git rev-list --count origin/ollvm
+          git rev-list --count origin/aosp --not origin/ollvm
+          git rev-list --count origin/ollvm --not origin/aosp
 
       - name: Display Summary
         run: |
