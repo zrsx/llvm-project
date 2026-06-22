@@ -5,10 +5,10 @@ on:
 
 jobs:
   calculate:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - name: Checkout Hybrid Repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0 # Full history required for rev-list
@@ -31,7 +31,7 @@ jobs:
           # 3. Match AOSP's synthetic numbering exactly:
           #    git rev-list --count --first-parent ${base_sha}..${sha}
           #    --first-parent is required so merge commits don't inflate the count
-          DIFF=$(git rev-list --count --first-parent "$CHECKPOINT_SHA"..HEAD)
+          DIFF=$(git rev-list --count "$CHECKPOINT_SHA"..HEAD)
 
           # 4. Final calculation
           FINAL_REV=$((CHECKPOINT_REV + DIFF))
