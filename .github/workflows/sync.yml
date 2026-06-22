@@ -1,10 +1,10 @@
-name: Merge LLVM 22.1.8 into Hybrid Branch
+name: Sync Hybrid LLVM 22.1.8
 
 on:
-  workflow_dispatch: # Manual trigger to control the merge process
+  workflow_dispatch:
 
 jobs:
-  merge-upstream:
+  merge-tag:
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -13,34 +13,33 @@ jobs:
       - name: Checkout Hybrid Repo
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Full history required for merging
-          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0 # We need your local history to perform the merge
 
-      - name: Configure Git Identity
+      - name: Configure Git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Add Official LLVM Remote
+      - name: Fetch Single Tag from Upstream
         run: |
+          # Add upstream but do NOT fetch anything yet
           git remote add upstream https://github.com/llvm/llvm-project.git
-          git fetch upstream --tags
-
-      - name: Merge LLVM 22.1.8
-        run: |
-          # Ensure we are on the correct branch (e.g., main or aosp-hybrid)
-          git checkout main
           
-          echo "Starting merge of llvmorg-22.1.8..."
-          
-          # Merge the official tag. 
-          # --no-ff creates a merge commit which is better for tracking hybrid history
-          # -m provides a clear commit message
-          git merge upstream/llvmorg-22.1.8 --no-ff \
-            -m "Merge official LLVM 22.1.8 into hybrid branch" \
-            -m "Updating base from 22.1.7 to 22.1.8 while preserving AOSP modifications."
+          # Fetch ONLY the specific tag needed (depth 1 keeps it small)
+          # This prevents the "new tag" spam for version 8, 9, 10 etc.
+          git fetch upstream tag llvmorg-22.1.8 --no-tags --depth 1
 
-      - name: Push Updated Hybrid Branch
-        if: success()
+      - name: Merge 22.1.8 into Hybrid Branch
         run: |
+          echo "Starting merge of official 22.1.8..."
+          
+          # Merge the specific tag we just fetched (available as FETCH_HEAD)
+          # --allow-unrelated-histories is sometimes needed for shallow hybrid clones
+          git merge FETCH_HEAD --no-ff \
+            -m "Merge official LLVM 22.1.8" \
+            -m "Source: https://github.com/llvm/llvm-project/releases/tag/llvmorg-22.1.8"
+
+      - name: Push to Mirror
+        run: |
+          # Push the merged results back to your repo
           git push origin main
