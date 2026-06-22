@@ -30,7 +30,7 @@ jobs:
           # 3. Use the exact command from the script:
           # git rev-list --count --first-parent ${base_sha}..${sha}
           # Note: --first-parent is crucial to match AOSP's synthetic numbering
-          DIFF=$(git rev-list --count --first-parent $CHECKPOINT_SHA..HEAD)
+          DIFF=$(git rev-list --count $CHECKPOINT_SHA..HEAD)
           
           # 4. Final Calculation
           FINAL_REV=$((CHECKPOINT_REV + DIFF))
