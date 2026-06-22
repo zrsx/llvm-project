@@ -8,43 +8,46 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Hybrid Repo
-        uses: actions/checkout@v7
+        uses: actions/checkout@v6
         with:
           ref: main
-          fetch-depth: 0 # Need full history for rev-list
+          fetch-depth: 0 # Full history required for rev-list
 
       - name: Run AOSP Logic
         id: aosp_logic
         run: |
-          # 1. Defined Checkpoints from the Python script you provided
-          # (Revision, SHA)
+          set -euo pipefail
+
+          # 1. Defined checkpoint (revision, SHA)
           CHECKPOINT_REV=500000
           CHECKPOINT_SHA="173855f9b0bdfe45d71272596b510650bfc1ca33"
-          
-          # 2. Check if the checkpoint exists in this branch's history
-          if ! git merge-base --is-ancestor $CHECKPOINT_SHA HEAD; then
-            echo "Error: Checkpoint $CHECKPOINT_SHA not found in history."
+
+          # 2. Verify the checkpoint exists in this branch's history
+          if ! git merge-base --is-ancestor "$CHECKPOINT_SHA" HEAD; then
+            echo "Error: Checkpoint $CHECKPOINT_SHA not found in history." >&2
             exit 1
           fi
 
-          # 3. Use the exact command from the script:
-          # git rev-list --count --first-parent ${base_sha}..${sha}
-          # Note: --first-parent is crucial to match AOSP's synthetic numbering
-          DIFF=$(git rev-list --count $CHECKPOINT_SHA..HEAD)
-          
-          # 4. Final Calculation
+          # 3. Match AOSP's synthetic numbering exactly:
+          #    git rev-list --count --first-parent ${base_sha}..${sha}
+          #    --first-parent is required so merge commits don't inflate the count
+          DIFF=$(git rev-list --count --first-parent "$CHECKPOINT_SHA"..HEAD)
+
+          # 4. Final calculation
           FINAL_REV=$((CHECKPOINT_REV + DIFF))
-          
-          echo "R_NUMBER=r$FINAL_REV" >> $GITHUB_ENV
-          echo "diff=$DIFF" >> $GITHUB_OUTPUT
+
+          echo "r_number=r${FINAL_REV}" >> "$GITHUB_OUTPUT"
+          echo "diff=${DIFF}" >> "$GITHUB_OUTPUT"
 
       - name: Display Summary
         run: |
-          echo "### 🛠️ AOSP Script Logic Result" >> $GITHUB_STEP_SUMMARY
-          echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "| --- | --- |" >> $GITHUB_STEP_SUMMARY
-          echo "| Base Checkpoint | \`r500000\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Commits since Checkpoint | \`${{ steps.aosp_logic.outputs.diff }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Final AOSP Revision** | **${{ env.R_NUMBER }}** |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Set \`_svn_revision = '${{ env.R_NUMBER }}'\` in \`android_version.py\`" >> $GITHUB_STEP_SUMMARY
+          {
+            echo "### 🛠️ AOSP Script Logic Result"
+            echo "| Metric | Value |"
+            echo "| --- | --- |"
+            echo "| Base Checkpoint | \`r500000\` |"
+            echo "| Commits since Checkpoint | \`${{ steps.aosp_logic.outputs.diff }}\` |"
+            echo "| **Final AOSP Revision** | **${{ steps.aosp_logic.outputs.r_number }}** |"
+            echo ""
+            echo "Set \`_svn_revision = '${{ steps.aosp_logic.outputs.r_number }}'\` in \`android_version.py\`"
+          } >> "$GITHUB_STEP_SUMMARY"
